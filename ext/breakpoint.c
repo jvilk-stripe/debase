@@ -1,4 +1,21 @@
 #include <debase_internals.h>
+#include <inttypes.h> // defines uint32_t
+
+
+// From https://stackoverflow.com/a/24753227
+typedef uint32_t bitarray_t;
+#define RESERVE_BITS(n) (((n)+0x1f)>>5)
+#define DW_INDEX(x) ((x)>>5)
+#define BIT_INDEX(x) ((x)&0x1f)
+#define GETBIT(array,index) (((array)[DW_INDEX(index)]>>BIT_INDEX(index))&1)
+#define PUTBIT(array, index, bit) \
+    ((bit)&1 ?  ((array)[DW_INDEX(index)] |= 1<<BIT_INDEX(index)) \
+             :  ((array)[DW_INDEX(index)] &= ~(1<<BIT_INDEX(index))) \
+             , 0 \
+    )
+#define CLEARBITS(array, size) for (int i = 0; i < RESERVE_BITS(size); i++) { array[i] = 0; }
+// Can unique identify lines 0 thru 65535 with breakpoints. Larger values wrap around.
+#define BIT_ARRAY_SIZE 0xFFFF
 
 #ifdef _WIN32
 #include <ctype.h>
@@ -12,6 +29,8 @@
 
 static VALUE cBreakpoint;
 static int breakpoint_max;
+// If bit x is set, then a breakpoint on line x (or x % BIT_ARRAY_SIZE) exists and may be active.
+static bitarray_t existing_breakpoint_lines[RESERVE_BITS(BIT_ARRAY_SIZE)];
 
 static ID idEval;
 
@@ -80,7 +99,7 @@ Breakpoint_initialize(VALUE self, VALUE source, VALUE pos, VALUE expr)
 }
 
 static VALUE
-Breakpoint_remove(VALUE self, VALUE breakpoints, VALUE id_value)
+Breakpoint_activate(VALUE self, VALUE breakpoints, VALUE id_value)
 {
   int i;
   int id;
@@ -91,17 +110,48 @@ Breakpoint_remove(VALUE self, VALUE breakpoints, VALUE id_value)
 
   id = FIX2INT(id_value);
 
-  for(i = 0; i < RARRAY_LENINT(breakpoints); i++)
+  for (i = 0; i < RARRAY_LENINT(breakpoints); i++)
   {
     breakpoint_object = rb_ary_entry(breakpoints, i);
     Data_Get_Struct(breakpoint_object, breakpoint_t, breakpoint);
     if(breakpoint->id == id)
     {
-      rb_ary_delete_at(breakpoints, i);
-      return breakpoint_object;
+      PUTBIT(existing_breakpoint_lines, breakpoint->line % BIT_ARRAY_SIZE, 1);
+      return Qnil;
     }
   }
   return Qnil;
+}
+
+static VALUE
+Breakpoint_remove(VALUE self, VALUE breakpoints, VALUE id_value)
+{
+  int i;
+  int id;
+  VALUE breakpoint_object;
+  VALUE breakpoint_object_to_return;
+  breakpoint_t *breakpoint;
+
+  if (breakpoints == Qnil) return Qnil;
+
+  id = FIX2INT(id_value);
+  breakpoint_object_to_return = Qnil;
+
+  // Rebuild line bitvector while traversing breakpoints array.
+  CLEARBITS(existing_breakpoint_lines, BIT_ARRAY_SIZE)
+  for (i = 0; i < RARRAY_LENINT(breakpoints); i++)
+  {
+    breakpoint_object = rb_ary_entry(breakpoints, i);
+    Data_Get_Struct(breakpoint_object, breakpoint_t, breakpoint);
+    if (breakpoint->id == id)
+    {
+      rb_ary_delete_at(breakpoints, i);
+      breakpoint_object_to_return = breakpoint_object;
+    } else {
+      PUTBIT(existing_breakpoint_lines, breakpoint->line, 1);
+    }
+  }
+  return breakpoint_object_to_return;
 }
 
 static VALUE
@@ -274,8 +324,14 @@ breakpoint_find(VALUE breakpoints, VALUE source, VALUE pos, VALUE trace_point)
   int line;
   int i;
 
-  file = RSTRING_PTR(source);
+  
   line = FIX2INT(pos);
+  // Fast reject: We have no breakpoints for this line.
+  if (GETBIT(existing_breakpoint_lines, line % BIT_ARRAY_SIZE) == 0) {
+    return Qnil;
+  }
+
+  file = RSTRING_PTR(source);
   for(i = 0; i < RARRAY_LENINT(breakpoints); i++)
   {
     breakpoint_object = rb_ary_entry(breakpoints, i);
@@ -301,6 +357,7 @@ Init_breakpoint(VALUE mDebase)
   cBreakpoint = rb_define_class_under(mDebase, "Breakpoint", rb_cObject);
   rb_define_singleton_method(cBreakpoint, "find", Breakpoint_find, 4);
   rb_define_singleton_method(cBreakpoint, "remove", Breakpoint_remove, 2);
+  rb_define_singleton_method(cBreakpoint, "activate", Breakpoint_activate, 2);
   rb_define_method(cBreakpoint, "initialize", Breakpoint_initialize, 3);
   rb_define_method(cBreakpoint, "id", Breakpoint_id, 0);
   rb_define_method(cBreakpoint, "source", Breakpoint_source, 0);

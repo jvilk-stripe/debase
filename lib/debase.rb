@@ -43,6 +43,7 @@ module Debase
     def add_breakpoint(file, line, expr=nil)
       breakpoint = Breakpoint.new(file, line, expr)
       breakpoints << breakpoint
+      Breakpoint.activate breakpoints, breakpoint.id
       enable_trace_points
       breakpoint
     end

@@ -17,6 +17,10 @@ module Debase
 
     end
 
+    def self.activate(breakpoints, id)
+      # NOP
+    end
+
     def self.remove(breakpoints, id)
       bp = breakpoints.delete_if {|b| b.id == id}
       bp.delete! if bp
