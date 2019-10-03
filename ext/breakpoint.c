@@ -1,5 +1,7 @@
 #include <debase_internals.h>
 #include <inttypes.h> // defines uint32_t
+#include <stddef.h> // defines size_t
+#include <strings.h> // for strncmp
 
 
 // From https://stackoverflow.com/a/24753227
@@ -31,6 +33,77 @@ static VALUE cBreakpoint;
 static int breakpoint_max;
 // If bit x is set, then a breakpoint on line x (or x % BIT_ARRAY_SIZE) exists and may be active.
 static bitarray_t existing_breakpoint_lines[RESERVE_BITS(BIT_ARRAY_SIZE)];
+
+#define HASH_MULT 65599; // sdbm
+#define HASH_MULT2 31;   // for names
+
+inline unsigned int mix(unsigned int acc, unsigned int nw) {
+    return nw + (acc << 6) + (acc << 16) - acc; // HASH_MULT in faster version
+}
+
+inline unsigned int hash(char *str, size_t len) {
+    unsigned int res = 0;
+    for (size_t i = 0; i < len; i++) {
+        res = mix(res, str[i] - '!'); // "!" is the first printable letter in ASCII.
+        // This will help Latin1 but may harm utf8 multibyte
+    }
+    return res * HASH_MULT2;
+}
+
+
+#define REALPATH_CACHE_SIZE 1024
+#ifdef PATH_MAX
+// Each entry is a [rawPath, realPath] tuple.
+char realpath_cache[REALPATH_CACHE_SIZE * 2 * (PATH_MAX + 1)];
+static char* realpath_cached(char* path, size_t len)
+{
+  unsigned int index = hash(path, len) % REALPATH_CACHE_SIZE;
+  const size_t entry_offset = index * (PATH_MAX + 1) * 2;
+  char* entry_path = &realpath_cache[entry_offset];
+  char* entry_realpath = &realpath_cache[entry_offset + PATH_MAX + 1];
+  // TODO: Compare backwards.
+  if (strncmp(path, entry_path, PATH_MAX + 1) == 0) {
+    // Cache hit.
+    return entry_realpath;
+  }
+  // Not cached.
+  if (realpath(path, entry_realpath) != NULL) {
+    strncpy(entry_path, path, len + 1);
+    return entry_realpath;
+  }
+  return NULL;
+}
+#else
+// Entries alternate between rawPath and realPath.
+char *realpath_cache[REALPATH_CACHE_SIZE * 2];
+static char* realpath_cached(char* path, size_t len)
+{
+  unsigned int index = hash(path, len) % REALPATH_CACHE_SIZE;
+  char* entry_path = realpath_cache[index * 2];
+  char* entry_realpath = realpath_cache[index * 2 + 1];
+  // TODO: Compare backwards.
+  if (entry_path != NULL && strncmp(path, entry_path, len + 1) == 0) {
+    // Cache hit.
+    return entry_realpath;
+  }
+  char* realpath_result = realpath(path, NULL);
+  // Not cached.
+  if (realpath_result != NULL) {
+    // Free old strings.
+    if (entry_path != NULL) {
+      free(entry_path);
+      free(entry_realpath);
+    }
+    char* copied_path = malloc(sizeof(char) * (len + 1));
+    strncpy(copied_path, path, len + 1);
+    realpath_cache[index * 2] = copied_path;
+    realpath_cache[index * 2 + 1] = realpath_result;
+    return realpath_result;
+  }
+  return NULL;
+}
+#endif
+
 
 static ID idEval;
 
@@ -256,18 +329,9 @@ filename_cmp(VALUE source, char *file)
 #ifdef _WIN32
   return filename_cmp_impl(source, file);
 #else
-#ifdef PATH_MAX
-  char path[PATH_MAX + 1];    
-  path[PATH_MAX] = 0;
-  return filename_cmp_impl(source, realpath(file, path) != NULL ? path : file);
-#else
-  char *path;
-  int result;
-  path = realpath(file, NULL);
-  result = filename_cmp_impl(source, path == NULL ? file : path);
-  free(path);
-  return result;
-#endif  
+  size_t len = strlen(file);
+  char *path = realpath_cached(file, len);
+  return filename_cmp_impl(source, path != NULL ? path : file);
 #endif  
 }
 
