@@ -293,15 +293,14 @@ Breakpoint_pos(VALUE self)
 }
 
 int
-filename_cmp_impl(VALUE source, char *file)
+filename_cmp_impl(VALUE source, char *file, long f_len)
 {
   char *source_ptr, *file_ptr;
-  long s_len, f_len, min_len;
+  long s_len, min_len;
   long s,f;
   int dirsep_flag = 0;
 
   s_len = RSTRING_LEN(source);
-  f_len = strlen(file);
   min_len = s_len < f_len ? s_len : f_len;
 
   source_ptr = RSTRING_PTR(source);
@@ -324,19 +323,18 @@ filename_cmp_impl(VALUE source, char *file)
 }
 
 int
-filename_cmp(VALUE source, char *file)
+filename_cmp(VALUE source, char *file, long file_len)
 {
 #ifdef _WIN32
-  return filename_cmp_impl(source, file);
+  return filename_cmp_impl(source, file, file_len);
 #else
-  size_t len = strlen(file);
-  char *path = realpath_cached(file, len);
-  return filename_cmp_impl(source, path != NULL ? path : file);
+  char *path = realpath_cached(file, file_len);
+  return filename_cmp_impl(source, path != NULL ? path : file, file_len);
 #endif  
 }
 
 static int
-check_breakpoint_by_pos(VALUE breakpoint_object, char *file, int line)
+check_breakpoint_by_pos(VALUE breakpoint_object, char *file, long file_len, int line)
 {
     breakpoint_t *breakpoint;
 
@@ -344,9 +342,9 @@ check_breakpoint_by_pos(VALUE breakpoint_object, char *file, int line)
         return 0;
     Data_Get_Struct(breakpoint_object, breakpoint_t, breakpoint);
     if (Qtrue != breakpoint->enabled) return 0;
-    if(breakpoint->line != line)
+    if (breakpoint->line != line)
         return 0;
-    if(filename_cmp(breakpoint->source, file))
+    if(filename_cmp(breakpoint->source, file, file_len))
         return 1;
     return 0;
 }
@@ -387,6 +385,7 @@ breakpoint_find(VALUE breakpoints, VALUE source, VALUE pos, VALUE trace_point)
   char *file;
   int line;
   int i;
+  long file_len;
 
   
   line = FIX2INT(pos);
@@ -396,10 +395,11 @@ breakpoint_find(VALUE breakpoints, VALUE source, VALUE pos, VALUE trace_point)
   }
 
   file = RSTRING_PTR(source);
+  file_len = RSTRING_LEN(source);
   for(i = 0; i < RARRAY_LENINT(breakpoints); i++)
   {
     breakpoint_object = rb_ary_entry(breakpoints, i);
-    if (check_breakpoint_by_pos(breakpoint_object, file, line) &&
+    if (check_breakpoint_by_pos(breakpoint_object, file, file_len, line) &&
       check_breakpoint_expr(breakpoint_object, trace_point))
     {
       return breakpoint_object;
