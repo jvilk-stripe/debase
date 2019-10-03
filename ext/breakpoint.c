@@ -51,8 +51,7 @@ inline unsigned int hash(char *str, size_t len) {
 
 #define REALPATH_CACHE_SIZE 2048
 
-static int realpath_cache_size;
-static const int realpath_cache_capacity = REALPATH_CACHE_SIZE;
+static int cache_miss_count;
 
 #ifdef PATH_MAX
 // Each entry is a [rawPath, realPath] tuple.
@@ -67,6 +66,7 @@ static char* realpath_cached(char* path, size_t len)
     // Cache hit.
     return entry_realpath;
   }
+  cache_miss_count++;
   // Not cached.
   if (realpath(path, entry_realpath) != NULL) {
     strncpy(entry_path, path, len + 1);
@@ -86,6 +86,7 @@ static char* realpath_cached(char* path, size_t len)
     // Cache hit.
     return entry_realpath;
   }
+  cache_miss_count++;
   char* realpath_result = realpath(path, NULL);
   // Not cached.
   if (realpath_result != NULL) {
@@ -169,6 +170,12 @@ Breakpoint_initialize(VALUE self, VALUE source, VALUE pos, VALUE expr)
   breakpoint->expr = NIL_P(expr) ? expr : StringValue(expr);
 
   return Qnil;
+}
+
+static VALUE
+Breakpoint_cache_misses(VALUE self)
+{
+  return INT2FIX(cache_miss_count);
 }
 
 static VALUE
@@ -422,6 +429,7 @@ Init_breakpoint(VALUE mDebase)
   rb_define_singleton_method(cBreakpoint, "find", Breakpoint_find, 4);
   rb_define_singleton_method(cBreakpoint, "remove", Breakpoint_remove, 2);
   rb_define_singleton_method(cBreakpoint, "activate", Breakpoint_activate, 2);
+  rb_define_singleton_method(cBreakpoint, "cache_misses", Breakpoint_cache_misses, 0);
   rb_define_method(cBreakpoint, "initialize", Breakpoint_initialize, 3);
   rb_define_method(cBreakpoint, "id", Breakpoint_id, 0);
   rb_define_method(cBreakpoint, "source", Breakpoint_source, 0);

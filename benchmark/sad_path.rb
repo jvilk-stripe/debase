@@ -23,3 +23,6 @@ Benchmark.bm do |x|
         Debugger.add_breakpoint("foo.rb", 18, nil)
     end
 end
+
+puts Debase::Breakpoint.cache_misses
+
