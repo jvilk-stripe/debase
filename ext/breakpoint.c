@@ -49,8 +49,11 @@ inline unsigned int hash(char *str, size_t len) {
     return res * HASH_MULT;
 }
 
+#define REALPATH_CACHE_SIZE 2048
 
-#define REALPATH_CACHE_SIZE 1024
+static int realpath_cache_size;
+static const int realpath_cache_capacity = REALPATH_CACHE_SIZE;
+
 #ifdef PATH_MAX
 // Each entry is a [rawPath, realPath] tuple.
 char realpath_cache[REALPATH_CACHE_SIZE * 2 * (PATH_MAX + 1)];
@@ -60,7 +63,6 @@ static char* realpath_cached(char* path, size_t len)
   const size_t entry_offset = index * (PATH_MAX + 1) * 2;
   char* entry_path = &realpath_cache[entry_offset];
   char* entry_realpath = &realpath_cache[entry_offset + PATH_MAX + 1];
-  // TODO: Compare backwards.
   if (strncmp(path, entry_path, PATH_MAX + 1) == 0) {
     // Cache hit.
     return entry_realpath;
@@ -80,7 +82,6 @@ static char* realpath_cached(char* path, size_t len)
   unsigned int index = hash(path, len) % REALPATH_CACHE_SIZE;
   char* entry_path = realpath_cache[index * 2];
   char* entry_realpath = realpath_cache[index * 2 + 1];
-  // TODO: Compare backwards.
   if (entry_path != NULL && strncmp(path, entry_path, len + 1) == 0) {
     // Cache hit.
     return entry_realpath;
