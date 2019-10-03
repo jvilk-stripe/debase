@@ -11,6 +11,7 @@ step =[step, 1].max
 
 Benchmark.bm do |x|
     bps = 0
+    bps = []
     while bps <= max_breakpoints do
         x.report("#{bps}") {
             i = 0
@@ -19,6 +20,10 @@ Benchmark.bm do |x|
             end
         }
         bps += 1
-        Debugger.add_breakpoint("foo.rb", 500 + bps, nil)
+        bps << Debugger.add_breakpoint("foo.rb", 500 + bps, nil)
     end
+    bps.each do |bp|
+        Debugger.remove_breakpoint(bp.id)
+    end
+    bps = []
 end

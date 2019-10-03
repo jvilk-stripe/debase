@@ -1,7 +1,7 @@
 #include <debase_internals.h>
 #include <inttypes.h> // defines uint32_t
 #include <stddef.h> // defines size_t
-#include <strings.h> // for strncmp
+#include <string.h> // for strncmp
 
 
 // From https://stackoverflow.com/a/24753227
@@ -29,6 +29,7 @@ typedef uint32_t bitarray_t;
 #define isdirsep(x) ((x) == '/')
 #endif
 
+static int disableCache;
 static VALUE cBreakpoint;
 static int breakpoint_max;
 // If bit x is set, then a breakpoint on line x (or x % BIT_ARRAY_SIZE) exists and may be active.
@@ -53,55 +54,137 @@ inline unsigned int hash(char *str, size_t len) {
 
 static int cache_miss_count;
 
+typedef struct realpath_result_t {
+  // Non-null-terminated string.
+  char *str;
+  size_t str_len;
+} realpath_result_t;
+
 #ifdef PATH_MAX
-// Each entry is a [rawPath, realPath] tuple.
-char realpath_cache[REALPATH_CACHE_SIZE * 2 * (PATH_MAX + 1)];
-static char* realpath_cached(char* path, size_t len)
+typedef struct cached_string_t {
+  // String. May not be null terminated.
+  char str[PATH_MAX + 1];
+  // Length of string (not including null terminators).
+  size_t str_len;
+} cached_string_t;
+
+typedef struct cache_entry_t {
+  cached_string_t path;
+  cached_string_t realpath;
+} cache_entry_t;
+
+cache_entry_t realpath_cache[REALPATH_CACHE_SIZE];
+static realpath_result_t uncached_realpath(char *path, size_t len, cached_string_t *cache_realpath) {
+  realpath_result_t rv;
+  if (realpath(path, cache_realpath->str) != NULL) {
+    cache_realpath->str_len = strnlen(cache_realpath->str, PATH_MAX);
+  } else {
+    // Realpath failed. Use `path` as the realpath.
+    cache_realpath->str_len = len;
+    strncpy(cache_realpath->str, path, len);
+  }
+  rv.str = cache_realpath->str;
+  rv.str_len = cache_realpath->str_len;
+  return rv;
+}
+
+static realpath_result_t realpath_cached(char* path, size_t len)
 {
-  unsigned int index = hash(path, len) % REALPATH_CACHE_SIZE;
-  const size_t entry_offset = index * (PATH_MAX + 1) * 2;
-  char* entry_path = &realpath_cache[entry_offset];
-  char* entry_realpath = &realpath_cache[entry_offset + PATH_MAX + 1];
-  if (strncmp(path, entry_path, PATH_MAX + 1) == 0) {
+  if (disableCache) {
+    return uncached_realpath(path, len, &realpath_cache[0].path);
+  }
+  const unsigned int index = hash(path, len) % REALPATH_CACHE_SIZE;
+  cache_entry_t *entry = &realpath_cache[index]; 
+  cached_string_t* entry_path = &entry->path;
+  cached_string_t* entry_realpath = &entry->realpath;
+  realpath_result_t rv;
+  if (entry_path->str_len == len && strncmp(path, entry_path->str, len) == 0) {
     // Cache hit.
-    return entry_realpath;
+    rv.str = entry_realpath->str;
+    rv.str_len = entry_realpath->str_len;
+    return rv;
   }
   cache_miss_count++;
-  // Not cached.
-  if (realpath(path, entry_realpath) != NULL) {
-    strncpy(entry_path, path, len + 1);
-    return entry_realpath;
+
+  rv = uncached_realpath(path, len, entry_realpath);
+  strncpy(entry_path->str, path, len);
+  entry_path->str_len = len;
+
+  return rv;
+}
+
+static void clearCache()
+{
+  for (int i = 0; i < REALPATH_CACHE_SIZE; i++) {
+    realpath_cache[i].path.str_len = 0;
+    realpath_cache[i].realpath.str_len = 0;
   }
-  return NULL;
 }
 #else
+typedef struct cache_entry_t {
+  realpath_result_t path;
+  realpath_result_t realpath;
+} cache_entry_t;
+
+static void freeCachedString(realpath_result_t *str) {
+  if (str->str != NULL) {
+    free(str->str);
+    str->str = NULL;
+    str->str_len = 0;
+  }
+}
+
+static realpath_result_t uncached_realpath(char *path, size_t len, realpath_result_t* rv) {
+  freeCachedString(rv);
+  rv->str = realpath(path, NULL);
+  if (rv->str != NULL) {
+    rv->str_len = strlen(rv->str);
+  } else {
+    // Realpath failed. Use `path` as the realpath.
+    rv->str_len = len;
+    rv->str = path;
+  }
+  return *rv;
+}
+
+
+
+static void freeCacheEntry(cache_entry_t *entry) {
+  freeCachedString(&entry->path);
+  freeCachedString(&entry->realpath);
+}
+
 // Entries alternate between rawPath and realPath.
-char *realpath_cache[REALPATH_CACHE_SIZE * 2];
-static char* realpath_cached(char* path, size_t len)
+static cache_entry_t realpath_cache[REALPATH_CACHE_SIZE];
+static realpath_result_t realpath_cached(char* path, size_t len)
 {
+  if (disableCache) {
+    return uncached_realpath(path, len, &realpath_cache[0].realpath);
+  }
   unsigned int index = hash(path, len) % REALPATH_CACHE_SIZE;
-  char* entry_path = realpath_cache[index * 2];
-  char* entry_realpath = realpath_cache[index * 2 + 1];
-  if (entry_path != NULL && strncmp(path, entry_path, len + 1) == 0) {
+  cache_entry_t *entry = &realpath_cache[index];
+  realpath_result_t* entry_path = &entry->path;
+  realpath_result_t* entry_realpath = &entry->realpath;
+  if (!disableCache && entry_path->str_len == len && entry_path->str != NULL && strncmp(path, entry_path->str, len) == 0) {
     // Cache hit.
-    return entry_realpath;
+    return *entry_realpath;
   }
   cache_miss_count++;
-  char* realpath_result = realpath(path, NULL);
-  // Not cached.
-  if (realpath_result != NULL) {
-    // Free old strings.
-    if (entry_path != NULL) {
-      free(entry_path);
-      free(entry_realpath);
-    }
-    char* copied_path = malloc(sizeof(char) * (len + 1));
-    strncpy(copied_path, path, len + 1);
-    realpath_cache[index * 2] = copied_path;
-    realpath_cache[index * 2 + 1] = realpath_result;
-    return realpath_result;
+
+  freeCacheEntry(entry);
+  realpath_result_t rv = uncached_realpath(path, len, entry_realpath);
+  entry_path->str = malloc(sizeof(char) * len);
+  entry_path->str_len = len;
+  strncpy(entry_path->str, path, len);
+  return rv;
+}
+
+
+static void clearCache()
+{
+  for (int i = 0; i < REALPATH_CACHE_SIZE; i++) {
+    freeCacheEntry(&realpath_cache[i]);
   }
-  return NULL;
 }
 #endif
 
@@ -235,6 +318,16 @@ Breakpoint_remove(VALUE self, VALUE breakpoints, VALUE id_value)
 }
 
 static VALUE
+Breakpoint_disable_cache(VALUE self, VALUE newValue) {
+  disableCache = newValue == Qtrue ? 1 : 0;
+
+  // Clear cache
+  clearCache();
+
+  return disableCache ? Qtrue : Qfalse;
+}
+
+static VALUE
 Breakpoint_id(VALUE self)
 {
   breakpoint_t *breakpoint;
@@ -335,8 +428,8 @@ filename_cmp(VALUE source, char *file, long file_len)
 #ifdef _WIN32
   return filename_cmp_impl(source, file, file_len);
 #else
-  char *path = realpath_cached(file, file_len);
-  return filename_cmp_impl(source, path != NULL ? path : file, file_len);
+  realpath_result_t path = realpath_cached(file, file_len);
+  return filename_cmp_impl(source, path.str, path.str_len);
 #endif  
 }
 
@@ -430,6 +523,7 @@ Init_breakpoint(VALUE mDebase)
   rb_define_singleton_method(cBreakpoint, "remove", Breakpoint_remove, 2);
   rb_define_singleton_method(cBreakpoint, "activate", Breakpoint_activate, 2);
   rb_define_singleton_method(cBreakpoint, "cache_misses", Breakpoint_cache_misses, 0);
+  rb_define_singleton_method(cBreakpoint, "disable_cache", Breakpoint_disable_cache, 1);
   rb_define_method(cBreakpoint, "initialize", Breakpoint_initialize, 3);
   rb_define_method(cBreakpoint, "id", Breakpoint_id, 0);
   rb_define_method(cBreakpoint, "source", Breakpoint_source, 0);
@@ -445,4 +539,5 @@ Init_breakpoint(VALUE mDebase)
   rb_define_alloc_func(cBreakpoint, Breakpoint_create);
 
   idEval = rb_intern("eval");
+  disableCache = 0;
 }
