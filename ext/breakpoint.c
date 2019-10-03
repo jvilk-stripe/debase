@@ -35,7 +35,6 @@ static int breakpoint_max;
 static bitarray_t existing_breakpoint_lines[RESERVE_BITS(BIT_ARRAY_SIZE)];
 
 #define HASH_MULT 65599; // sdbm
-#define HASH_MULT2 31;   // for names
 
 inline unsigned int mix(unsigned int acc, unsigned int nw) {
     return nw + (acc << 6) + (acc << 16) - acc; // HASH_MULT in faster version
@@ -47,7 +46,7 @@ inline unsigned int hash(char *str, size_t len) {
         res = mix(res, str[i] - '!'); // "!" is the first printable letter in ASCII.
         // This will help Latin1 but may harm utf8 multibyte
     }
-    return res * HASH_MULT2;
+    return res * HASH_MULT;
 }
 
 
